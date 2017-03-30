@@ -1,0 +1,223 @@
+sorce :https://www.elastic.co/blog/found-writing-a-plugin
+
+
+Using plugins, it's possible to add new functionality to Elasticsearch without having to create a fork of Elasticsearch itself. In this article, we will go through the steps required to create a new Elasticsearch plugin from the ground up.
+Set Up a Project Build Structure
+
+The only requirements to build Elasticsearch plugins are:
+
+    a working Maven installation
+    a Java compiler
+
+A packaged plugin is simply a Zip file that contains one or more Java Jar files with compiled code and resources. Once a plugin is written and packaged, it can easily be added to any Elasticsearch installation in a single command.
+
+We start by creating the necessary plugin structure for our example plugin:
+
+$ mkdir example-plugin
+$ cd example-plugin
+$ mkdir -p src/main/{java,resources,assemblies}
+$ mkdir -p src/main/java/org/elasticsearch/plugin/example
+
+Next, we need a Maven configuration file, which by convention goes into pom.xml:
+
+<modelVersion>4.0.0</modelVersion>
+<groupId>org.elasticsearch.plugin.example</groupId>
+<artifactId>example-plugin</artifactId>
+<version>1.0-SNAPSHOT</version>
+<packaging>jar</packaging>
+<properties>
+    <elasticsearch.version>0.90.3</elasticsearch.version>
+</properties>
+<dependencies>
+    <dependency>
+        <groupId>org.elasticsearch</groupId>
+        <artifactId>elasticsearch</artifactId>
+        <version>${elasticsearch.version}</version>
+        <scope>compile</scope>
+    </dependency>
+</dependencies>
+<build>
+    <plugins>
+        <plugin>
+            <artifactId>maven-assembly-plugin</artifactId>
+            <version>2.3</version>
+            <configuration>
+                <appendAssemblyId>false</appendAssemblyId>
+                <outputDirectory>${project.build.directory}/releases/</outputDirectory>
+                <descriptors>
+                    <descriptor>${basedir}/src/main/assemblies/plugin.xml</descriptor>
+                </descriptors>
+            </configuration>
+            <executions>
+                <execution>
+                    <phase>package</phase>
+                    <goals>
+                        <goal>single</goal>
+                    </goals>
+                </execution>
+            </executions>
+        </plugin>
+    </plugins>
+</build>
+Read Less
+
+While most parts of the Maven configuration file above is boilerplate, defining some required properties and configuring dependencies, the interesting part in this case is the reference to src/main/assemblies/plugin.xml, which we use to configure the packaging of the plugin:
+
+<?xml version="1.0"?>
+<assembly>
+    <id>plugin</id>
+    <formats>
+        <format>zip</format>
+    </formats>
+    <includeBaseDirectory>false</includeBaseDirectory>
+    <dependencySets>
+        <dependencySet>
+            <outputDirectory>/</outputDirectory>
+            <useProjectArtifact>true</useProjectArtifact>
+            <useTransitiveFiltering>true</useTransitiveFiltering>
+            <excludes>
+                <exclude>org.elasticsearch:elasticsearch</exclude>
+            </excludes>
+        </dependencySet>
+    </dependencySets>
+</assembly>
+Read Less
+
+Letting Elasticsearch Know About Our Plugin
+
+While the above two files is enough to get the plugin build process working, we need to tell Elasticsearch about our plugin, which is done by adding the name of the plugin to a special es-plugin.properties -file on the classpath. We do this by creating src/main/resourc/es-plugin.properties:
+
+plugin=org.elasticsearch.plugin.example.ExamplePlugin
+
+When Elasticsearch starts up, the Elasticsearch org.elasticsearch.plugins.PluginManager will scan the current classpath looking for plugin configuration files and instantiate the referenced plugins. The es-plugin.properties file is a simple Java properties file which must contain the key plugin. The value should be a fully qualified class name for a compatible plugin class.
+
+A simple plugin extends org.elasticsearch.plugins.AbstractPlugin , which reduces boilerplate code, and may look like this:
+
+package org.elasticsearch.plugin.example;
+import org.elasticsearch.plugins.AbstractPlugin;
+public class ExamplePlugin extends AbstractPlugin { @Override public String name() { return "example-plugin"; }
+@Override public String description() { return "Example Plugin Description"; }
+}
+
+The name is used in Elasticsearch to identify the plugin, for example when printing the list of loaded plugins. The description is not currently used for anything, but might be used in a potential future plugin management or information API.
+A Working Plugin
+
+The four files we just created are actually sufficient to create an Elasticsearch plugin. If you followed the above steps, your directory tree should look something like this:
+
+│
+├── pom.xml
+├── src
+│   └── main
+│       ├── assemblies
+│       │   └── plugin.xml
+│       ├── java
+│       │   └── org
+│       │       └── elasticsearch
+│       │           └── plugin
+│       │               └── example
+│       │                   ├── ExamplePlugin.java
+│       └── resources
+│           └── es-plugin.properties
+│
+
+Being Maven-based, most Java IDEs such as IDEA and Eclipse are able to read the project definition from the pom.xml-file and automatically configure a project and download the required dependencies.
+
+In the next section we will show how to build the plugin from the command line and how to get it installed.
+Building and Installing the Plugin
+
+Before distributing and using the plugin, it has to be assembled, which is done via Maven:
+
+$ mvn package
+
+The above command assembles our plugin package into a single Zip file that can be installed using the Elasticsearch plugin command:
+
+$ bin/plugin --url file:///PATH-TO-EXAMPLE-PLUGIN/target/releases/example-plugin-1.0-SNAPSHOT.zip --install example-plugin
+
+Note that we use the --url option for the plugin command in order to inform it to get the file locally instead of trying to download it from an online repository.
+
+We can now start Elasticsearch and see that our plugin gets loaded:
+
+$ bin/elasticsearch -f
+[2013-09-04 17:33:27,443][INFO ][node                     ] [Andrew Chord] version[0.90.3], pid[67218], build[5c38d60/2013-08-06T13:18:31Z]
+[2013-09-04 17:33:27,443][INFO ][node                     ] [Andrew Chord] initializing ...
+[2013-09-04 17:33:27,455][INFO ][plugins                  ] [Andrew Chord] loaded [example-plugin], sites []
+
+However, since our plugin doesn’t actually do anything, there’s very little proof that we’ve accomplished something. The next section demonstrates how to return a simple HTTP response to the built-in HTTP server.
+Example: Saying Hello
+
+Plugins can add functionality to Elasticsearch in many different ways. In this section we’ll show how to use Guice to add a Module to Elasticsearch. Guice is used in Elasticsearch to wire together all the components of the server and to provide well-documented entry points into the server. Describing Guice is out of scope for this article and interested readers should have no problem finding multiple tutorials and introductions to the Guice framework.
+Adding a New Module
+
+To add a new Module Elasticsearch, we override the abstract modules() method on AbstractPlugin, which allows us to add multiple Modules by returning a reference to their class in a collection. We start by adding a new Module to our ExamplePlugin:
+
+package org.elasticsearch.plugin.example;
+import org.elasticsearch.common.collect.Lists; import org.elasticsearch.common.inject.Module; import org.elasticsearch.plugins.AbstractPlugin;
+import java.util.Collection;
+public class ExamplePlugin extends AbstractPlugin { @Override public String name() { return "example-plugin"; }
+@Override public String description() { return "Example Plugin Description"; } @Override public Collection<Class<? extends Module>> modules() { Collection<Class<? extends Module>> modules = Lists.newArrayList(); modules.add(ExampleRestModule.class); return modules; }
+}
+Read Less
+
+These modules are instantiated by Elasticsearch during initialization, and their configure() method is invoked. In this method, we have to make sure our RestHandler gets added to the list of classes to instantiate:
+
+package org.elasticsearch.plugin.example;
+import org.elasticsearch.common.inject.AbstractModule;
+public class ExampleRestModule extends AbstractModule { @Override protected void configure() { bind(HelloRestHandler.class).asEagerSingleton(); } }
+
+By binding the class to itself as an eager singleton, we inform the framework that we would like it to instantiate just a single instance of the HelloRestHandler class. The class is instantiated by invoking the constructor annotated with @Inject once all its constructor arguments have been instantiated.
+Creating the HTTP Handler
+
+In Elasticsearch, all REST requests are handled by a org.elasticsearch.rest.RestController instance, which maintains an internal routing of paths to org.elasticsearch.rest.RestHandler instances, which in turn handle the requests.
+
+Adding support for a new HTTP request is as simple as obtaining a reference to the RestController via Guice and registering the handler with the controller.
+
+Our HelloRestHandler should look like this:
+
+package org.elasticsearch.plugin.example;
+import org.elasticsearch.rest.*;
+import org.elasticsearch.common.inject.Inject;
+import static org.elasticsearch.rest.RestRequest.Method.GET; import static org.elasticsearch.rest.RestStatus.OK;
+public class HelloRestHandler implements RestHandler { @Inject public HelloRestHandler(RestController restController) { restController.registerHandler(GET, "/_hello", this); }
+@Override public void handleRequest(final RestRequest request, final RestChannel channel) { String who = request.param("who"); String whoSafe = (who!=null) ? who : "world"; channel.sendResponse(new StringRestResponse(OK, "Hello, " + whoSafe + "!")); }
+}
+Read Less
+
+Building and Installing the Updated Plugin
+
+Now the folder structure should look like this:
+
+│
+├── pom.xml
+├── src
+│   └── main
+│       ├── assemblies
+│       │   └── plugin.xml
+│       ├── java
+│       │   └── org
+│       │       └── elasticsearch
+│       │           └── plugin
+│       │               └── example
+│       │                   ├── ExamplePlugin.java
+│       │                   ├── ExampleRestModule.java
+│       │                   └── HelloRestHandler.java
+│       └── resources
+│           └── es-plugin.properties
+│
+
+We can proceed to re-package our plugin, update Elasticsearch and verify that the plugin is working. Build the package by using Maven in the example-plugin folder:
+
+$ mvn package
+
+To update the installed plugin in Elasticsearch we have to stop Elasticsearch, uninstall the plugin, reinstall the plugin and restart Elasticsearch:
+
+$ bin/plugin --remove example-plugin $ bin/plugin --url file:///PATH-TO-EXAMPLE-PLUGIN/target/releases/example-plugin-1.0-SNAPSHOT.zip --install example-plugin $ bin/elasticsearch -f
+
+Using another terminal, we can now confirm that the plugin works as expected:
+
+$ curl localhost:9200/hello Hello, world! $ curl localhost:9200/hello?who=Elasticsearch Hello, Elasticsearch!
+
+Conclusion
+
+In this article, we’ve shown how to create a new Elasticsearch plugin from scratch. While it’s relatively easy to get started writing plugins for Elasticsearch, writing more sophisticated plugins usually requires some insight into the current Elasticsearch code base.
+
+Update: Added <appendAssemblyId>false</appendAssemblyId> in pom.xml to exclude -plugin suffix in file name. This works better when publishing the plugin to a Maven repository.
